@@ -3365,6 +3365,55 @@ class TestModels(unittest.TestCase):
         err = mx.abs(got[uids[1]] - alone).max().item()
         self.assertLess(err, 1e-5)
 
+    def test_nemotron_h_padded_batch(self):
+        from mlx_lm.generate import BatchGenerator
+        from mlx_lm.models import nemotron_h
+
+        # The SSM update must use cache.lengths, as in #1908. Batching with an
+        # equal-length prompt needs no padding, so it isolates the padding error.
+        mx.random.seed(0)
+        args = nemotron_h.ModelArgs(
+            model_type="nemotron_h",
+            vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            max_position_embeddings=512,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            attention_bias=False,
+            mamba_num_heads=4,
+            mamba_head_dim=32,
+            mamba_proj_bias=False,
+            ssm_state_size=32,
+            conv_kernel=4,
+            n_groups=1,
+            mlp_bias=False,
+            layer_norm_epsilon=1e-5,
+            use_bias=False,
+            use_conv_bias=True,
+            hybrid_override_pattern=["M", "*"],
+        )
+        model = nemotron_h.Model(args)
+        # Random init hides the SSM path; strengthen it so the bug shows.
+        mixer = model.backbone.layers[0].mixer
+        mixer.A_log = mx.full(mixer.A_log.shape, -4.0)
+        mixer.conv1d.weight = mixer.conv1d.weight * 30
+
+        def batched(other):
+            gen = BatchGenerator(model, max_tokens=1)
+            uids = gen.insert([other, [7, 8, 9]])
+            got = {}
+            while len(got) < 2:
+                for r in gen.next_generated():
+                    got[r.uid] = r.logprobs
+            gen.close()
+            return got[uids[1]]
+
+        unpadded = batched([4, 5, 6])
+        padded = batched(list(range(1, 13)))
+        err = mx.abs(padded - unpadded).max().item()
+        self.assertLess(err, 1e-5)
+
     def test_laguna_sanitize(self):
         from mlx_lm.models import laguna
 
